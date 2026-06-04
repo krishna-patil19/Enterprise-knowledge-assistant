@@ -72,6 +72,16 @@ class S3Watcher:
         self.handler = S3BucketEventHandler(self.trigger)
 
     def start(self):
+        source = os.environ.get("S3_INGESTION_SOURCE", "local").lower()
+        if source in ("s3", "github"):
+            logger.info(f"S3 Ingestion Source is set to '{source}'. File system watcher is disabled because files are remote.")
+            try:
+                while True:
+                    time.sleep(10)
+            except KeyboardInterrupt:
+                pass
+            return
+
         os.makedirs(self.s3_root, exist_ok=True)
         self.observer.schedule(self.handler, self.s3_root, recursive=True)
         self.observer.start()

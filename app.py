@@ -287,41 +287,91 @@ with st.sidebar:
 
     st.divider()
 
+    # --- S3 Bucket Selector (when using S3 mode) ---
+    ingestion_source = st.session_state.pipeline.ingestion_source
+    if ingestion_source == "s3":
+        available_buckets = st.session_state.pipeline.available_buckets
+        if len(available_buckets) > 1:
+            st.markdown("### 🪣 S3 Bucket")
+            current_bucket = st.session_state.pipeline.bucket_name
+            selected_bucket = st.selectbox(
+                "Select active bucket",
+                options=available_buckets,
+                index=available_buckets.index(current_bucket) if current_bucket in available_buckets else 0,
+                label_visibility="collapsed",
+            )
+            if selected_bucket != st.session_state.pipeline.bucket_name:
+                st.session_state.pipeline.set_bucket(selected_bucket)
+                st.rerun()
+            st.divider()
+        else:
+            st.caption(f"📦 Bucket: `{st.session_state.pipeline.bucket_name}`")
+            st.divider()
+
     # --- File Upload ---
     st.markdown("### 📄 Upload Documents")
-    uploaded_files = st.file_uploader(
-        "Drop files here to add to the knowledge base",
-        type=["sql", "py", "md", "yaml", "yml", "json", "pdf", "txt"],
-        accept_multiple_files=True,
-        label_visibility="collapsed",
-    )
-
-    if uploaded_files:
-        s3_root = st.session_state.pipeline.s3_root
-        new_files = []
-        for uf in uploaded_files:
-            dest_folder = route_uploaded_file(uf.name)
-            dest_dir = os.path.join(s3_root, dest_folder)
-            os.makedirs(dest_dir, exist_ok=True)
-            dest_path = os.path.join(dest_dir, uf.name)
-
-            # Only write if file is new or changed
-            file_bytes = uf.read()
-            write_needed = True
-            if os.path.exists(dest_path):
-                with open(dest_path, "rb") as existing:
-                    if existing.read() == file_bytes:
-                        write_needed = False
-
-            if write_needed:
-                with open(dest_path, "wb") as f:
-                    f.write(file_bytes)
-                new_files.append(uf.name)
-
-        if new_files:
-            with st.spinner(f"Indexing {len(new_files)} new file(s)..."):
-                stats = st.session_state.pipeline.run_scan_and_index()
-            st.success(f"✅ Indexed {stats['indexed']} file(s), {stats['skipped']} unchanged")
+    
+    if ingestion_source == "github":
+        github_repo = st.session_state.pipeline.github_repo_url
+        st.info(f"**GitHub Sync Enabled**\n\nApp is synced with repository:\n`{github_repo}`\n\nClick **Re-index** to fetch latest commits. File uploads are disabled in GitHub mode.")
+    else:
+        uploaded_files = st.file_uploader(
+            "Drop files here to add to the knowledge base",
+            type=["sql", "py", "md", "yaml", "yml", "json", "pdf", "txt"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+    
+        if uploaded_files:
+            new_files = []
+            
+            if ingestion_source == "s3":
+                bucket_name = st.session_state.pipeline.bucket_name
+                s3_client = st.session_state.pipeline._get_s3_client()
+                for uf in uploaded_files:
+                    dest_folder = route_uploaded_file(uf.name)
+                    s3_key = f"{dest_folder}/{uf.name}" if dest_folder != "general" else uf.name
+                    file_bytes = uf.read()
+                    
+                    upload_needed = True
+                    try:
+                        head = s3_client.head_object(Bucket=bucket_name, Key=s3_key)
+                        s3_etag = head['ETag'].strip('"')
+                        import hashlib
+                        local_md5 = hashlib.md5(file_bytes).hexdigest()
+                        if s3_etag == local_md5 and head['ContentLength'] == len(file_bytes):
+                            upload_needed = False
+                    except Exception:
+                        pass
+                        
+                    if upload_needed:
+                        s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=file_bytes)
+                        new_files.append(uf.name)
+            else:
+                s3_root = st.session_state.pipeline.s3_root
+                for uf in uploaded_files:
+                    dest_folder = route_uploaded_file(uf.name)
+                    dest_dir = os.path.join(s3_root, dest_folder)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    dest_path = os.path.join(dest_dir, uf.name)
+    
+                    # Only write if file is new or changed
+                    file_bytes = uf.read()
+                    write_needed = True
+                    if os.path.exists(dest_path):
+                        with open(dest_path, "rb") as existing:
+                            if existing.read() == file_bytes:
+                                write_needed = False
+    
+                    if write_needed:
+                        with open(dest_path, "wb") as f:
+                            f.write(file_bytes)
+                        new_files.append(uf.name)
+    
+            if new_files:
+                with st.spinner(f"Indexing {len(new_files)} new file(s)..."):
+                    stats = st.session_state.pipeline.run_scan_and_index()
+                st.success(f"✅ Indexed {stats['indexed']} file(s), {stats['skipped']} unchanged")
 
     st.divider()
 
@@ -386,11 +436,32 @@ for msg in st.session_state.messages:
                     # Provide full file viewer
                     with st.expander(f"📄 View Full Original File: {src_name}"):
                         try:
-                            with open(src["file_path"], "r", encoding="utf-8") as f:
-                                full_content = f.read()
+                            file_path = src["file_path"]
+                            if file_path.startswith("s3://"):
+                                path_no_scheme = file_path[5:]
+                                parts = path_no_scheme.split('/', 1)
+                                bucket = parts[0]
+                                key = parts[1] if len(parts) > 1 else ''
+                                
+                                s3_client = st.session_state.pipeline._get_s3_client()
+                                obj = s3_client.get_object(Bucket=bucket, Key=key)
+                                full_content = obj['Body'].read().decode("utf-8", errors="ignore")
+                            elif file_path.startswith("github://"):
+                                path_no_scheme = file_path[9:]
+                                parts = path_no_scheme.split('/', 1)
+                                key = parts[1] if len(parts) > 1 else ''
+                                
+                                base_dir = os.path.dirname(os.path.abspath(__file__))
+                                local_path = os.path.join(base_dir, ".temp_github_ingest", key)
+                                
+                                with open(local_path, "r", encoding="utf-8") as f:
+                                    full_content = f.read()
+                            else:
+                                with open(file_path, "r", encoding="utf-8") as f:
+                                    full_content = f.read()
                             st.code(full_content, language=src["chunk_type"] if src["chunk_type"] in ("sql", "python") else "markdown")
-                        except Exception:
-                            st.info("Binary or unreadable file format.")
+                        except Exception as e:
+                            st.info(f"Could not load file details: {str(e)}")
 
 # Welcome state when no messages
 if not st.session_state.messages:
