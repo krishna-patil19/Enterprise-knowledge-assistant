@@ -290,7 +290,9 @@ class HybridSearcher:
         candidates_str = ""
         for idx, chunk in enumerate(chunks):
             src_name = os.path.basename(chunk["file_path"])
-            preview = chunk["content"][:200].replace("\n", " ")
+            # Strip comment lines to avoid wasting the preview window on boilerplate headers
+            clean_lines = [line for line in chunk["content"].split("\n") if not line.strip().startswith(("#", "--", "//"))]
+            preview = " ".join(clean_lines).strip()[:500]
             candidates_str += f"[{idx + 1}] Source: {src_name} | Type: {chunk['chunk_type']} | Content: {preview}...\n"
             
         system_prompt = (

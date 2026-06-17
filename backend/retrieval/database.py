@@ -94,11 +94,13 @@ def delete_file(path: str):
     """Deletes a file and all cascade elements."""
     client = get_client()
     client.command("ALTER TABLE files DELETE WHERE path = {p:String} SETTINGS mutations_sync = 1", parameters={'p': path})
+    client.command("ALTER TABLE embeddings DELETE WHERE chunk_id IN (SELECT id FROM chunks WHERE file_path = {p:String}) SETTINGS mutations_sync = 1", parameters={'p': path})
     client.command("ALTER TABLE chunks DELETE WHERE file_path = {p:String} SETTINGS mutations_sync = 1", parameters={'p': path})
     client.command("ALTER TABLE relationships DELETE WHERE source_path = {p:String} OR target_path = {p:String} SETTINGS mutations_sync = 1", parameters={'p': path})
 
 def delete_chunks_for_file(path: str):
     client = get_client()
+    client.command("ALTER TABLE embeddings DELETE WHERE chunk_id IN (SELECT id FROM chunks WHERE file_path = {p:String}) SETTINGS mutations_sync = 1", parameters={'p': path})
     client.command("ALTER TABLE chunks DELETE WHERE file_path = {p:String} SETTINGS mutations_sync = 1", parameters={'p': path})
 
 def save_chunk(chunk_id: str, file_path: str, content: str, chunk_type: str, token_count: int, metadata: Dict[str, Any], embedding: List[float]):

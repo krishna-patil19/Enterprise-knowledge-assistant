@@ -378,6 +378,11 @@ class ConfigParser:
         for match in re.finditer(file_path_pattern, content):
             services.add(match.group(1))
             
+        # Add AWS S3 URIs to the file paths
+        s3_path_pattern = r's3://[a-zA-Z0-9_\-\./]+'
+        for match in re.finditer(s3_path_pattern, content):
+            services.add(match.group(0))
+            
         metadata = {
             "file_name": file_name,
             "tables": list(tables),
@@ -394,8 +399,32 @@ class ConfigParser:
                         metadata["service_name"] = data["service"].get("name")
                     if "clickhouse" in data and isinstance(data["clickhouse"], dict):
                         metadata["clickhouse_host"] = data["clickhouse"].get("host")
+                        
+                    # Extract AWS Glue jobs from custom YAML structure
+                    if "state_machine" in data:
+                        metadata["linked_assets"].append(str(data["state_machine"]))
+                    if "schedule" in data:
+                        metadata["linked_assets"].append(str(data["schedule"]))
+                    if "reports" in data and isinstance(data["reports"], list):
+                        for report in data["reports"]:
+                            if isinstance(report, dict):
+                                if "glue_jobs" in report and isinstance(report["glue_jobs"], dict):
+                                    for job_key, job_name in report["glue_jobs"].items():
+                                        if isinstance(job_name, str):
+                                            metadata["linked_assets"].append(job_name)
+                                if "state_machine" in report:
+                                    metadata["linked_assets"].append(str(report["state_machine"]))
+                                if "schedule" in report:
+                                    metadata["linked_assets"].append(str(report["schedule"]))
+                                if "sql_file" in report:
+                                    metadata["linked_assets"].append(str(report["sql_file"]))
+                                if "source_file" in report:
+                                    metadata["linked_assets"].append(str(report["source_file"]))
             except Exception:
                 pass
+                
+        # Deduplicate linked_assets
+        metadata["linked_assets"] = list(set(metadata["linked_assets"]))
                 
         # Truncate content to avoid LLM context window explosion for giant JSONs
         safe_content = content[:80000]
