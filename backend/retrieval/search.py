@@ -176,8 +176,7 @@ class HybridSearcher:
         return scopes
 
     def _fts_keyword_search(self, query: str) -> List[Tuple[str, float]]:
-        """Executes full-text keyword search natively in ClickHouse."""
-        results = []
+        """Executes full-text keyword search natively in ClickHouse, scored with BM25 in Python."""
         try:
             clean_query = re.sub(r'[^\w\s]', ' ', query).strip()
             if not clean_query:
@@ -187,16 +186,34 @@ class HybridSearcher:
             if not words:
                 return []
                 
-            # Use ClickHouse positionCaseInsensitive
+            # Use ClickHouse positionCaseInsensitive as a first-pass candidate generator
             conditions = " OR ".join([f"positionCaseInsensitive(content, '{w}') > 0" for w in words])
-            ch_query = f"SELECT id FROM chunks WHERE {conditions} LIMIT 50"
+            ch_query = f"SELECT id, content FROM chunks WHERE {conditions} LIMIT 100"
             rows = database.execute_query(ch_query)
             
-            for idx, row in enumerate(rows):
-                results.append((row["id"], 100.0 / (idx + 1)))
+            if not rows:
+                return []
+                
+            # Python-based BM25 scoring on candidates
+            from rank_bm25 import BM25Okapi
+            
+            tokenized_corpus = [row["content"].lower().split() for row in rows]
+            tokenized_query = [w.lower() for w in words]
+            
+            bm25 = BM25Okapi(tokenized_corpus)
+            doc_scores = bm25.get_scores(tokenized_query)
+            
+            results = []
+            for idx, score in enumerate(doc_scores):
+                if score > 0:
+                    results.append((rows[idx]["id"], float(score)))
+                    
+            # Sort by BM25 score descending
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:50]
         except Exception as e:
             logger.warning(f"Keyword search failed: {str(e)}")
-        return results
+            return []
 
     def _vector_cosine_search(self, query: str) -> List[Tuple[str, float]]:
         """Computes dense vector similarity natively inside ClickHouse Cloud using cosineDistance."""
